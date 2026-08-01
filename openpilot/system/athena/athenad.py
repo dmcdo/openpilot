@@ -44,6 +44,7 @@ from openpilot.common.hardware import HARDWARE, PC
 from openpilot.system.loggerd.config import CAMERA_FPS, SEGMENT_LENGTH
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 from openpilot.tools.lib.helpers import RE
+from openpilot.system.loggerd.uploader import LOCAL_ONLY_FILENAMES
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.common.hardware.hw import Paths
@@ -659,6 +660,10 @@ def uploadFilesToUrls(files_data: list[UploadFileDict]) -> UploadFilesToUrlRespo
   failed: list[str] = []
   for file in files:
     if len(file.fn) == 0 or file.fn[0] == '/' or '..' in file.fn or len(file.url) == 0:
+      failed.append(file.fn)
+      continue
+
+    if os.path.basename(file.fn) in LOCAL_ONLY_FILENAMES:
       failed.append(file.fn)
       continue
 
