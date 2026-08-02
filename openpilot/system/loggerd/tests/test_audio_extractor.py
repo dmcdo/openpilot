@@ -13,11 +13,21 @@ from openpilot.system.loggerd.audio_extractor import (
 from openpilot.system.loggerd.xattr_cache import getxattr
 
 
+def _system_ffmpeg() -> str:
+  """The project's vendored `ffmpeg` (comma-deps-ffmpeg) is a stripped-down build with only the
+  encoders/demuxers loggerd/audio_extractor actually need (h264, aac, mpegts, stream-copy) - it has
+  no lavfi/synthetic-source support, so test fixture generation needs a full-featured ffmpeg."""
+  for candidate in ("/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+    if os.path.exists(candidate):
+      return candidate
+  raise RuntimeError("no full-featured system ffmpeg found for test fixture generation")
+
+
 def _make_ts_with_audio(path: str, with_audio: bool) -> None:
-  cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5"]
+  cmd = [_system_ffmpeg(), "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5"]
   if with_audio:
     cmd += ["-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:duration=1", "-c:a", "aac"]
-  cmd += ["-c:v", "mpeg2video", "-f", "mpegts", path]
+  cmd += ["-c:v", "libx264", "-f", "mpegts", path]
   subprocess.run(cmd, check=True, capture_output=True)
 
 
@@ -91,10 +101,12 @@ class TestAudioExtractor:
     qcam_path = os.path.join(segment, QCAMERA_FILENAME)
     _make_ts_with_audio(qcam_path, with_audio=True)
 
+    real_run = subprocess.run
+
     def fake_run(cmd, *args, **kwargs):
       if cmd[0] == "ffmpeg":
         return subprocess.CompletedProcess(cmd, 1, stdout=b'', stderr=b'boom')
-      return subprocess.run(cmd, *args, **kwargs)
+      return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 

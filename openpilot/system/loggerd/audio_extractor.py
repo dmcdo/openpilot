@@ -65,7 +65,10 @@ def _run_ffmpeg_to_temp(segment_path: str, suffix: str, args: list[str]) -> str 
 def _extract_and_strip_qcamera_audio(segment_path: str, qcam_path: str) -> bool:
   audio_path = os.path.join(segment_path, AUDIO_FILENAME)
 
-  tmp_audio = _run_ffmpeg_to_temp(segment_path, ".m4a", ["-i", qcam_path, "-vn", "-c:a", "copy"])
+  # force the mp4 muxer explicitly rather than relying on extension auto-detection: the
+  # project's vendored ffmpeg build only enables a handful of muxers and doesn't register the
+  # "ipod"/m4a alias, so a bare ".m4a" output fails with "Unable to choose an output format"
+  tmp_audio = _run_ffmpeg_to_temp(segment_path, ".m4a", ["-i", qcam_path, "-vn", "-c:a", "copy", "-f", "mp4"])
   if tmp_audio is None:
     return False
   os.replace(tmp_audio, audio_path)
