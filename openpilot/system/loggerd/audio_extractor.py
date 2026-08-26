@@ -1,6 +1,8 @@
+import contextlib
 import os
 import subprocess
 import tempfile
+import time
 
 import zstandard as zstd
 
@@ -13,6 +15,19 @@ from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 # uploader passes over an already-handled segment are a single cheap getxattr call
 AUDIO_PROCESSED_ATTR_NAME = 'user.audio_processed'
 AUDIO_PROCESSED_ATTR_VALUE = b'1'
+
+# unix timestamp (as ascii) before which a failed segment won't be retried - written to disk
+# (rather than kept in memory) so the cooldown is shared across the "uploader" and
+# "sunnylink_uploader" processes, which both call process_segment_audio() independently
+AUDIO_RETRY_AFTER_ATTR_NAME = 'user.audio_retry_after'
+RETRY_COOLDOWN_SECONDS = 300
+
+# both uploader processes race to process the same segments; this lock file (named so it's
+# picked up by the callers' existing "any .lock file present -> skip this segment" check)
+# ensures only one of them runs ffmpeg on a given segment at a time. A lock left behind by a
+# crash is cleared by clear_locks() on the next uploader startup, or reclaimed here if stale.
+AUDIO_LOCK_FILENAME = "audio_processing.lock"
+LOCK_STALE_SECONDS = 300
 
 QCAMERA_FILENAME = "qcamera.ts"
 AUDIO_FILENAME = "audio.m4a"
@@ -29,6 +44,49 @@ def _is_processed(path: str) -> bool:
 
 def _mark_processed(path: str) -> None:
   setxattr(path, AUDIO_PROCESSED_ATTR_NAME, AUDIO_PROCESSED_ATTR_VALUE)
+
+
+def _retry_is_due(qcam_path: str) -> bool:
+  raw = getxattr(qcam_path, AUDIO_RETRY_AFTER_ATTR_NAME)
+  if raw is None:
+    return True
+  try:
+    return time.time() >= float(raw)
+  except ValueError:
+    return True
+
+
+def _set_retry_backoff(qcam_path: str) -> None:
+  with contextlib.suppress(OSError):
+    setxattr(qcam_path, AUDIO_RETRY_AFTER_ATTR_NAME, str(time.time() + RETRY_COOLDOWN_SECONDS).encode())
+
+
+def _try_acquire_lock(lock_path: str) -> bool:
+  try:
+    os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    return True
+  except FileExistsError:
+    pass
+  except OSError:
+    cloudlog.exception(f"failed to create audio processing lock {lock_path}")
+    return False
+
+  try:
+    if time.time() - os.path.getmtime(lock_path) < LOCK_STALE_SECONDS:
+      return False
+    os.unlink(lock_path)
+    os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    return True
+  except OSError:
+    return False
+
+
+def _stripped_logs_done(segment_path: str) -> bool:
+  for log_filename in STRIPPED_LOG_FILENAMES:
+    log_path = os.path.join(segment_path, log_filename)
+    if os.path.exists(log_path) and not _is_processed(log_path):
+      return False
+  return True
 
 
 def _has_audio_stream(path: str) -> bool:
@@ -101,16 +159,7 @@ def _strip_audio_from_log(path: str) -> None:
     f.write(compressed)
 
 
-def process_segment_audio(segment_path: str) -> bool:
-  """Extracts mic audio out of qcamera.ts into its own file, strips it from qcamera.ts and
-  rlog/qlog in place. Returns True once the segment is confirmed free of embedded audio (either
-  because it never had any, or because stripping fully succeeded) - callers must not upload
-  anything in AUDIO_GATED_FILENAMES from this segment until this returns True, since a partial
-  failure leaves some of those files still carrying audio."""
-  qcam_path = os.path.join(segment_path, QCAMERA_FILENAME)
-  if not os.path.exists(qcam_path):
-    return True
-
+def _process_segment_audio_locked(segment_path: str, qcam_path: str) -> bool:
   # deleter.py can remove files out from under us at any point; treat any resulting OSError
   # (e.g. the file disappearing between the exists() check above and here) as "not processed
   # yet, try again next time" rather than letting it propagate out of the uploader loop
@@ -121,6 +170,12 @@ def process_segment_audio(segment_path: str) -> bool:
     return False
 
   if not qcam_processed:
+    # a segment that keeps failing (corrupt/truncated recording, etc.) would otherwise get
+    # retried at full ffprobe+ffmpeg cost on every single uploader loop iteration forever;
+    # back off instead so one bad segment can't stall the whole upload backlog
+    if not _retry_is_due(qcam_path):
+      return False
+
     try:
       if not _has_audio_stream(qcam_path):
         # confirmed no audio anywhere in this segment - nothing for rlog/qlog either
@@ -132,10 +187,12 @@ def process_segment_audio(segment_path: str) -> bool:
         return True
 
       if not _extract_and_strip_qcamera_audio(segment_path, qcam_path):
+        _set_retry_backoff(qcam_path)
         return False
       _mark_processed(qcam_path)
     except OSError:
       cloudlog.exception(f"failed to process qcamera audio for {segment_path}")
+      _set_retry_backoff(qcam_path)
       return False
 
   ok = True
@@ -151,3 +208,34 @@ def process_segment_audio(segment_path: str) -> bool:
       cloudlog.exception(f"failed to strip audio from {log_path}")
       ok = False
   return ok
+
+
+def process_segment_audio(segment_path: str) -> bool:
+  """Extracts mic audio out of qcamera.ts into its own file, strips it from qcamera.ts and
+  rlog/qlog in place. Returns True once the segment is confirmed free of embedded audio (either
+  because it never had any, or because stripping fully succeeded) - callers must not upload
+  anything in AUDIO_GATED_FILENAMES from this segment until this returns True, since a partial
+  failure leaves some of those files still carrying audio."""
+  qcam_path = os.path.join(segment_path, QCAMERA_FILENAME)
+  if not os.path.exists(qcam_path):
+    return True
+
+  try:
+    if _is_processed(qcam_path) and _stripped_logs_done(segment_path):
+      return True
+  except OSError:
+    pass
+
+  # the "uploader" and "sunnylink_uploader" processes both call this function independently;
+  # without this lock they can run ffmpeg on the same segment at once, and one process's
+  # partially-stripped qcamera.ts can trick the other's _has_audio_stream() check into thinking
+  # the segment never had audio, skipping the rlog/qlog strip below entirely
+  lock_path = os.path.join(segment_path, AUDIO_LOCK_FILENAME)
+  if not _try_acquire_lock(lock_path):
+    return False
+
+  try:
+    return _process_segment_audio_locked(segment_path, qcam_path)
+  finally:
+    with contextlib.suppress(OSError):
+      os.unlink(lock_path)

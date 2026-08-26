@@ -8,7 +8,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.tools.lib.logreader import LogReader
 
 from openpilot.system.loggerd.audio_extractor import (
-  process_segment_audio, AUDIO_FILENAME, QCAMERA_FILENAME, AUDIO_PROCESSED_ATTR_NAME,
+  process_segment_audio, AUDIO_FILENAME, QCAMERA_FILENAME, AUDIO_PROCESSED_ATTR_NAME, AUDIO_LOCK_FILENAME,
 )
 from openpilot.system.loggerd.xattr_cache import getxattr
 
@@ -113,6 +113,55 @@ class TestAudioExtractor:
     assert process_segment_audio(segment) is False
     assert not os.path.exists(os.path.join(segment, AUDIO_FILENAME))
     assert getxattr(qcam_path, AUDIO_PROCESSED_ATTR_NAME) is None, "must not mark processed on failure"
+
+  def test_failed_extraction_backs_off_before_retrying(self, tmp_path, monkeypatch):
+    segment = str(tmp_path)
+    qcam_path = os.path.join(segment, QCAMERA_FILENAME)
+    _make_ts_with_audio(qcam_path, with_audio=True)
+
+    real_run = subprocess.run
+    ffmpeg_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+      if cmd[0] == "ffmpeg":
+        ffmpeg_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout=b'', stderr=b'boom')
+      return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert process_segment_audio(segment) is False
+    assert len(ffmpeg_calls) == 1
+
+    # immediate retry within the cooldown window must not spawn ffmpeg again
+    assert process_segment_audio(segment) is False
+    assert len(ffmpeg_calls) == 1, "should be backing off, not retrying every call"
+
+  def test_lock_held_by_another_process_is_respected(self, tmp_path, monkeypatch):
+    segment = str(tmp_path)
+    qcam_path = os.path.join(segment, QCAMERA_FILENAME)
+    _make_ts_with_audio(qcam_path, with_audio=True)
+
+    real_run = subprocess.run
+    ffmpeg_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+      if cmd[0] == "ffmpeg":
+        ffmpeg_calls.append(cmd)
+      return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    lock_path = os.path.join(segment, AUDIO_LOCK_FILENAME)
+    os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    try:
+      assert process_segment_audio(segment) is False, "another process holds the lock"
+      assert len(ffmpeg_calls) == 0, "must not run ffmpeg while the lock is held elsewhere"
+    finally:
+      os.unlink(lock_path)
+
+    assert process_segment_audio(segment) is True, "should proceed once the lock is free"
+    assert len(ffmpeg_calls) > 0
 
 
 if __name__ == "__main__":
