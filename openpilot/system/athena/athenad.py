@@ -39,6 +39,7 @@ from openpilot.common.api import Api, get_key_pair
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.utils import CallbackReader, get_upload_stream
 from openpilot.common.params import Params
+from openpilot.common.upload_gate import is_upload_permitted
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware import HARDWARE, PC
 from openpilot.system.loggerd.config import CAMERA_FPS, SEGMENT_LENGTH
@@ -299,6 +300,16 @@ def upload_handler(end_event: threading.Event) -> None:
       metered = sm['deviceState'].networkMetered
       network_type = sm['deviceState'].networkType.raw
       if metered and (not item.allow_cellular):
+        retry_upload(tid, end_event, False)
+        continue
+
+      # gate uploads behind /dev/shm/upload; only files created at or after its timestamp are eligible
+      try:
+        permitted = is_upload_permitted(os.path.getctime(item.path))
+      except OSError:
+        # file doesn't exist (or similar); let the existing missing-file handling below deal with it
+        permitted = True
+      if not permitted:
         retry_upload(tid, end_event, False)
         continue
 

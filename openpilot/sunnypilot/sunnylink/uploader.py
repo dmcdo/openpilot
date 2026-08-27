@@ -16,6 +16,7 @@ from openpilot.common.utils import get_upload_stream
 from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware.hw import Paths
+from openpilot.common.upload_gate import is_upload_permitted
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 from openpilot.common.swaglog import cloudlog
 
@@ -113,6 +114,9 @@ class Uploader:
           # deleter could have deleted, so skip
           continue
         if is_uploaded:
+          continue
+
+        if not is_upload_permitted(ctime):
           continue
 
         # limit uploading on metered connections
