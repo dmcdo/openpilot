@@ -17,6 +17,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
+from openpilot.system.loggerd.audio_extractor import is_audio_safe, AUDIO_GATED_FILENAMES
 from openpilot.common.swaglog import cloudlog
 
 NetworkType = log.DeviceState.NetworkType
@@ -28,6 +29,9 @@ MAX_UPLOAD_SIZES = {
                    # bugs, including ones that can cause massive log sizes
   "qcam": 5*1e6,
 }
+
+# recorded locally (dashcam use) but must never leave the device, automatically or on request
+LOCAL_ONLY_FILENAMES = {"dcamera.hevc", "audio.m4a"}
 
 allow_sleep = bool(int(os.getenv("UPLOADER_SLEEP", "1")))
 force_wifi = os.getenv("FORCEWIFI") is not None
@@ -99,7 +103,18 @@ class Uploader:
       if any(name.endswith(".lock") for name in names):
         continue
 
+      # audio_extractord strips mic audio out of qcamera.ts/rlog/qlog in the background as
+      # segments are written; none of those may be uploaded until it's confirmed a segment is
+      # free of embedded audio
+      audio_safe = is_audio_safe(path)
+
       for name in sorted(names, key=lambda n: self.immediate_priority.get(n, 1000)):
+        if name in LOCAL_ONLY_FILENAMES:
+          continue
+
+        if not audio_safe and name in AUDIO_GATED_FILENAMES:
+          continue
+
         key = os.path.join(logdir, name)
         fn = os.path.join(path, name)
         # skip files already uploaded

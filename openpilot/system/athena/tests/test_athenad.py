@@ -280,6 +280,12 @@ class TestAthenadMethods(OpenpilotTestCase):
     not_exists_resp = dispatcher["uploadFileToUrl"]("does_not_exist.zst", "http://localhost:1238", {})
     assert not_exists_resp == {'enqueued': 0, 'items': [], 'failed': ['does_not_exist.zst']}
 
+  def test_upload_file_to_url_local_only(self, host):
+    self._create_file('2024-01-01--00-00-00--0/dcamera.hevc')
+    resp = dispatcher["uploadFileToUrl"]("2024-01-01--00-00-00--0/dcamera.hevc", f"{host}/dcamera.hevc", {})
+    assert resp == {'enqueued': 0, 'items': [], 'failed': ['2024-01-01--00-00-00--0/dcamera.hevc']}
+    assert athenad.upload_queue.qsize() == 0
+
   @with_upload_handler
   def test_upload_handler(self, host):
     fn = self._create_file('qlog.zst')

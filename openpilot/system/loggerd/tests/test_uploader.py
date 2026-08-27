@@ -1,12 +1,13 @@
 import os
 import threading
+import time
 import logging
 import json
 from pathlib import Path
 from openpilot.common.hardware.hw import Paths
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.loggerd.uploader import clear_locks, main, Uploader, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE
+from openpilot.system.loggerd.uploader import clear_locks, main, Uploader, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE, LOCAL_ONLY_FILENAMES
 
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
 
@@ -91,6 +92,23 @@ class TestUploader(UploaderTestCase):
       assert os.getxattr((Path(Paths.log_root()) / f_path).with_suffix(""), UPLOAD_ATTR_NAME) == UPLOAD_ATTR_VALUE, "All files not uploaded"
 
     assert log_handler.upload_order == exp_order, "Files uploaded in wrong order"
+
+  def test_upload_skips_local_only_files(self):
+    self.gen_files(lock=False)
+    local_only_paths = [self.make_file_with_data(self.seg_dir, fn, 1, lock=False) for fn in LOCAL_ONLY_FILENAMES]
+
+    self.start_thread()
+    # allow enough time that files could upload twice if there is a bug in the logic
+    time.sleep(1)
+    self.join_thread()
+
+    exp_order = self.gen_order([self.seg_num], [])
+
+    assert log_handler.upload_order == exp_order, "Files uploaded in wrong order"
+    for f_path in local_only_paths:
+      key = f"{self.seg_dir}/{f_path.name}"
+      assert key not in log_handler.upload_order, f"{f_path} should never be uploaded"
+      assert UPLOAD_ATTR_NAME not in os.listxattr(f_path), f"{f_path} should never be marked as uploaded"
 
   def test_upload_with_wrong_xattr(self):
     self.gen_files(lock=False, xattr=b'0')
