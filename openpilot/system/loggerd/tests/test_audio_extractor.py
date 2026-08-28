@@ -7,6 +7,7 @@ import zstandard as zstd
 import openpilot.cereal.messaging as messaging
 from openpilot.tools.lib.logreader import LogReader
 
+import openpilot.system.loggerd.audio_extractor as audio_extractor
 from openpilot.system.loggerd.audio_extractor import (
   process_segment_audio, is_audio_safe, AUDIO_FILENAME, QCAMERA_FILENAME, AUDIO_PROCESSED_ATTR_NAME,
 )
@@ -136,6 +137,30 @@ class TestAudioExtractor:
     # immediate retry within the cooldown window must not spawn ffmpeg again
     assert process_segment_audio(segment) is False
     assert len(ffmpeg_calls) == 1, "should be backing off, not retrying every call"
+
+  def test_failed_log_strip_backs_off_before_retrying(self, tmp_path, monkeypatch):
+    segment = str(tmp_path)
+    qcam_path = os.path.join(segment, QCAMERA_FILENAME)
+    _make_ts_with_audio(qcam_path, with_audio=False)
+
+    rlog_path = os.path.join(segment, "rlog.zst")
+    _write_log(rlog_path, [messaging.new_message('carState')])
+
+    strip_calls = []
+
+    def fake_strip(path):
+      strip_calls.append(path)
+      raise ValueError("corrupt log")
+
+    monkeypatch.setattr(audio_extractor, "_strip_audio_from_log", fake_strip)
+
+    assert process_segment_audio(segment) is False
+    assert len(strip_calls) == 1
+
+    # immediate retry within the cooldown window must not re-attempt the strip - this is what
+    # protects audio_extractord from hammering a genuinely corrupt log every 2-second scan
+    assert process_segment_audio(segment) is False
+    assert len(strip_calls) == 1, "should be backing off, not retrying every call"
 
   def test_is_audio_safe_reflects_processing_state_without_doing_work(self, tmp_path, monkeypatch):
     segment = str(tmp_path)

@@ -38,8 +38,8 @@ def _mark_processed(path: str) -> None:
   setxattr(path, AUDIO_PROCESSED_ATTR_NAME, AUDIO_PROCESSED_ATTR_VALUE)
 
 
-def _retry_is_due(qcam_path: str) -> bool:
-  raw = getxattr(qcam_path, AUDIO_RETRY_AFTER_ATTR_NAME)
+def _retry_is_due(path: str) -> bool:
+  raw = getxattr(path, AUDIO_RETRY_AFTER_ATTR_NAME)
   if raw is None:
     return True
   try:
@@ -48,9 +48,9 @@ def _retry_is_due(qcam_path: str) -> bool:
     return True
 
 
-def _set_retry_backoff(qcam_path: str) -> None:
+def _set_retry_backoff(path: str) -> None:
   with contextlib.suppress(OSError):
-    setxattr(qcam_path, AUDIO_RETRY_AFTER_ATTR_NAME, str(time.time() + RETRY_COOLDOWN_SECONDS).encode())
+    setxattr(path, AUDIO_RETRY_AFTER_ATTR_NAME, str(time.time() + RETRY_COOLDOWN_SECONDS).encode())
 
 
 def _stripped_logs_done(segment_path: str) -> bool:
@@ -195,12 +195,22 @@ def process_segment_audio(segment_path: str) -> bool:
   for log_filename in STRIPPED_LOG_FILENAMES:
     log_path = os.path.join(segment_path, log_filename)
     try:
-      if os.path.exists(log_path) and not _is_processed(log_path):
-        _strip_audio_from_log(log_path)
-        _mark_processed(log_path)
+      if not os.path.exists(log_path) or _is_processed(log_path):
+        continue
+
+      # a log that keeps failing (e.g. genuinely corrupt from an abrupt shutdown) would
+      # otherwise get re-decompressed and re-parsed on every single scan forever - back off
+      # instead, same as the qcamera extraction path above
+      if not _retry_is_due(log_path):
+        ok = False
+        continue
+
+      _strip_audio_from_log(log_path)
+      _mark_processed(log_path)
     except Exception:
       # broad on purpose: corrupt/truncated log data can raise capnp or zstd errors here,
-      # neither of which are OSError - any failure just means "retry this log next time"
+      # neither of which are OSError - any failure just means "retry this log later"
       cloudlog.exception(f"failed to strip audio from {log_path}")
+      _set_retry_backoff(log_path)
       ok = False
   return ok
