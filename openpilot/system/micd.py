@@ -102,7 +102,11 @@ class Mic:
 
         self.measurements = self.measurements[FFT_SAMPLES:]
 
-  @retry(attempts=10, delay=3)
+  # the ALSA card isn't enumerated by udev/alsactl until ~30s after boot on some boots, so a
+  # short retry budget here can be exhausted right as the card is about to come up - crashing
+  # micd and tripping selfdrived's processNotRunning gate on engage. Give it enough headroom
+  # to ride out a slow boot instead.
+  @retry(attempts=60, delay=3)
   def get_stream(self, sd):
     # reload sounddevice to reinitialize portaudio
     sd._terminate()

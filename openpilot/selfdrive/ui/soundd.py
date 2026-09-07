@@ -168,7 +168,11 @@ class Soundd(QuietMode):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 
-  @retry(attempts=10, delay=3)
+  # the ALSA card isn't enumerated by udev/alsactl until ~30s after boot on some boots, so a
+  # short retry budget here can be exhausted right as the card is about to come up - crashing
+  # soundd and tripping selfdrived's processNotRunning gate on engage. Give it enough headroom
+  # to ride out a slow boot instead.
+  @retry(attempts=60, delay=3)
   def get_stream(self, sd):
     # reload sounddevice to reinitialize portaudio
     sd._terminate()
