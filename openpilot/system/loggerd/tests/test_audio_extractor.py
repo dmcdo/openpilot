@@ -162,6 +162,30 @@ class TestAudioExtractor:
     assert process_segment_audio(segment) is False
     assert len(strip_calls) == 1, "should be backing off, not retrying every call"
 
+  def test_strip_audio_from_log_tolerates_truncated_tail(self, tmp_path):
+    # the last segment of a route is normally still being written when the device shuts down,
+    # so its log's final message is often cut off mid-write - this must not be treated as a
+    # reason to discard the whole file and retry forever
+    segment = str(tmp_path)
+    rlog_path = os.path.join(segment, "rlog.zst")
+
+    audio_msg = messaging.new_message('rawAudioData')
+    audio_msg.rawAudioData.data = bytes(800 * 2)
+    audio_msg.rawAudioData.sampleRate = 16000
+    control_msg = messaging.new_message('carState')
+    trailing_msg = messaging.new_message('carState')
+
+    dat = audio_msg.to_bytes() + control_msg.to_bytes() + trailing_msg.to_bytes()
+    truncated = dat[:-10]  # chop off the last message mid-write, like an abrupt shutdown would
+    with open(rlog_path, "wb") as f:
+      f.write(zstd.compress(truncated, 10))
+
+    audio_extractor._strip_audio_from_log(rlog_path)
+
+    which_values = [m.which() for m in LogReader(rlog_path)]
+    assert 'rawAudioData' not in which_values, "rawAudioData should still be stripped"
+    assert which_values.count('carState') == 1, "the complete leading message should survive; the truncated trailing one should be dropped, not raise"
+
   def test_is_audio_safe_reflects_processing_state_without_doing_work(self, tmp_path, monkeypatch):
     segment = str(tmp_path)
     qcam_path = os.path.join(segment, QCAMERA_FILENAME)

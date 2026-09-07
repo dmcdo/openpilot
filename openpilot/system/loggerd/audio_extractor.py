@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 
+import capnp
 import zstandard as zstd
 
 from openpilot.cereal import log as capnp_log
@@ -20,6 +21,14 @@ AUDIO_PROCESSED_ATTR_VALUE = b'1'
 # the cooldown survives audio_extractord restarts, not just kept across one process's lifetime
 AUDIO_RETRY_AFTER_ATTR_NAME = 'user.audio_retry_after'
 RETRY_COOLDOWN_SECONDS = 300
+
+# loggerd buffers video waiting for micd's first audio frame, but falls back to recording
+# without audio if that takes too long (e.g. micd is still waiting on a slow-to-enumerate ALSA
+# device at boot) - the audio track it splices in once micd catches up can start well past
+# ffmpeg/ffprobe's default stream-analysis window, which makes them report a bogus "0 channels"
+# instead of ever finding it. Force a much longer analysis window so a late-starting but
+# otherwise valid audio track still gets detected.
+FFMPEG_ANALYZE_ARGS = ["-analyzeduration", "60000000", "-probesize", "60000000"]
 
 QCAMERA_FILENAME = "qcamera.ts"
 AUDIO_FILENAME = "audio.m4a"
@@ -64,7 +73,7 @@ def _stripped_logs_done(segment_path: str) -> bool:
 def _has_audio_stream(path: str) -> bool:
   try:
     result = subprocess.run(
-      ["ffprobe", "-i", path, "-show_streams", "-select_streams", "a", "-loglevel", "error"],
+      ["ffprobe", *FFMPEG_ANALYZE_ARGS, "-i", path, "-show_streams", "-select_streams", "a", "-loglevel", "error"],
       capture_output=True, timeout=30,
     )
   except (OSError, subprocess.TimeoutExpired):
@@ -98,12 +107,12 @@ def _extract_and_strip_qcamera_audio(segment_path: str, qcam_path: str) -> bool:
   # force the mp4 muxer explicitly rather than relying on extension auto-detection: the
   # project's vendored ffmpeg build only enables a handful of muxers and doesn't register the
   # "ipod"/m4a alias, so a bare ".m4a" output fails with "Unable to choose an output format"
-  tmp_audio = _run_ffmpeg_to_temp(segment_path, ".m4a", ["-i", qcam_path, "-vn", "-c:a", "copy", "-f", "mp4"])
+  tmp_audio = _run_ffmpeg_to_temp(segment_path, ".m4a", [*FFMPEG_ANALYZE_ARGS, "-i", qcam_path, "-vn", "-c:a", "copy", "-f", "mp4"])
   if tmp_audio is None:
     return False
   os.replace(tmp_audio, audio_path)
 
-  tmp_video = _run_ffmpeg_to_temp(segment_path, ".ts", ["-i", qcam_path, "-c:v", "copy", "-an"])
+  tmp_video = _run_ffmpeg_to_temp(segment_path, ".ts", [*FFMPEG_ANALYZE_ARGS, "-i", qcam_path, "-c:v", "copy", "-an"])
   if tmp_video is None:
     return False
   os.replace(tmp_video, qcam_path)
@@ -121,8 +130,22 @@ def _strip_audio_from_log(path: str) -> None:
   with dctx.stream_reader(raw) as reader:
     dat = reader.read()
 
-  events = capnp_log.Event.read_multiple_bytes(dat)
-  kept = [e for e in events if e.which() != 'rawAudioData']
+  # the last segment of a route is often still being written when the device shuts down
+  # (ignition off, etc.), leaving a capnp message cut off mid-write at the end of the file -
+  # that's a normal, expected truncation rather than corruption, so keep everything parsed
+  # before that point instead of discarding the whole segment and retrying forever against
+  # trailing bytes that will never arrive (same approach as tools/lib/logreader.py)
+  kept = []
+  events = iter(capnp_log.Event.read_multiple_bytes(dat))
+  while True:
+    try:
+      event = next(events)
+    except StopIteration:
+      break
+    except capnp.KjException:
+      break
+    if event.which() != 'rawAudioData':
+      kept.append(event)
 
   out = b"".join(e.as_builder().to_bytes() for e in kept)
   compressed = zstd.compress(out, 10)
@@ -198,9 +221,10 @@ def process_segment_audio(segment_path: str) -> bool:
       if not os.path.exists(log_path) or _is_processed(log_path):
         continue
 
-      # a log that keeps failing (e.g. genuinely corrupt from an abrupt shutdown) would
-      # otherwise get re-decompressed and re-parsed on every single scan forever - back off
-      # instead, same as the qcamera extraction path above
+      # _strip_audio_from_log already tolerates a truncated tail (the normal last-segment-of-a-
+      # route case), so getting here means something else is wrong (e.g. the zstd stream itself
+      # won't decompress at all) - back off instead of re-decompressing and re-parsing a
+      # genuinely bad file on every single scan forever, same as the qcamera extraction path above
       if not _retry_is_due(log_path):
         ok = False
         continue
