@@ -9,6 +9,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.uploader import clear_locks, main, Uploader, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE
 
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
+from openpilot.system.loggerd.tests.upload_window_helper import open_upload_window
 
 
 class FakeLogHandler(logging.Handler):
@@ -46,6 +47,9 @@ cloudlog.addHandler(log_handler)
 class TestUploader(UploaderTestCase):
   def setup_method(self):
     super().openpilot_setup_method()
+    # these tests predate the /dev/shm upload window; hold it wide open so they exercise
+    # upload behavior rather than the gate (which has its own tests)
+    open_upload_window(self)
     log_handler.reset()
 
   def start_thread(self):

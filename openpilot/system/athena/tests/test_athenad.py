@@ -24,6 +24,7 @@ from openpilot.system.athena.athenad import MAX_RETRY_COUNT, UPLOAD_SESS, dispat
 from openpilot.system.athena.tests.helpers import HTTPRequestHandler, MockWebsocket, MockApi, EchoSocket
 from openpilot.selfdrive.test.helpers import http_server_context
 from openpilot.common.hardware.hw import Paths
+from openpilot.system.loggerd.tests.upload_window_helper import open_upload_window
 
 
 def seed_athena_server(host, port):
@@ -69,6 +70,9 @@ class TestAthenadMethods(OpenpilotTestCase):
       "GithubUsername": "commaci",
       "AthenadUploadQueue": [],
     }
+
+    # on-demand uploads are gated by the /dev/shm upload window; hold it open for these tests
+    open_upload_window(self)
 
     self.params = Params()
     for k, v in self.default_params.items():
