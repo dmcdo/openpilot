@@ -38,6 +38,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.api import Api, get_key_pair
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.utils import CallbackReader, get_upload_stream
+from openpilot.system.loggerd.upload_window import is_upload_allowed
 from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware import HARDWARE, PC
@@ -669,6 +670,12 @@ def uploadFilesToUrls(files_data: list[UploadFileDict]) -> UploadFilesToUrlRespo
     elif os.path.exists(path_external) or os.path.exists(strip_zst_extension(path_external)):
       path = path_external
     else:
+      failed.append(file.fn)
+      continue
+
+    # on-demand uploads are gated by the same /dev/shm window as the background uploaders
+    segment_dir = os.path.dirname(path)
+    if not is_upload_allowed(os.path.dirname(segment_dir), os.path.basename(segment_dir), path):
       failed.append(file.fn)
       continue
 

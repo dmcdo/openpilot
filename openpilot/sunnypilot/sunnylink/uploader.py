@@ -17,6 +17,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
+from openpilot.system.loggerd.upload_window import is_upload_allowed
 from openpilot.common.swaglog import cloudlog
 
 NetworkType = log.DeviceState.NetworkType
@@ -113,6 +114,10 @@ class Uploader:
           # deleter could have deleted, so skip
           continue
         if is_uploaded:
+          continue
+
+        # only drives outside the /dev/shm upload window may leave the device
+        if not is_upload_allowed(self.root, logdir, fn):
           continue
 
         # limit uploading on metered connections
