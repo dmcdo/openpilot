@@ -54,6 +54,10 @@ def set_alternative_experience(CP: structs.CarParams, CP_SP: structs.CarParamsSP
 
 
 def set_car_specific_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params):
+  # Lateral is subordinate to longitudinal in this fork: it disengages with ACC, so without UEM it would
+  # need a MADS button press after every single ACC engagement. See ModularAssistiveDrivingSystem.
+  params.put_bool("MadsUnifiedEngagementMode", True, block=True)
+
   if CP.brand == "hyundai":
     # TODO-SP: This should be separated from MADS module for future implementations
     #          Use "HyundaiLongitudinalMainCruiseToggleable" param
