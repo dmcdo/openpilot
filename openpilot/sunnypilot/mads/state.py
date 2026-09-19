@@ -36,6 +36,11 @@ class StateMachine:
     if not self.selfdrive.enabled:
       self.ss_state_machine.current_alert_types.append(alert_type)
 
+  def add_engage_alert_type(self):
+    # Lateral engaging is worth a chime even while longitudinal is already engaged, otherwise
+    # re-enabling lateral is silent. Mirrors the unconditional USER_DISABLE append below.
+    self.ss_state_machine.current_alert_types.append(ET.ENABLE)
+
   def check_contains(self, event_type: str) -> bool:
     return bool(self._events.contains(event_type) or self._events_sp.contains(event_type))
 
@@ -97,7 +102,7 @@ class StateMachine:
                 self.state = State.overriding
               else:
                 self.state = State.enabled
-              self.add_current_alert_types(ET.ENABLE)
+              self.add_engage_alert_type()
 
         # OVERRIDING
         elif self.state == State.overriding:
@@ -124,7 +129,7 @@ class StateMachine:
             self.state = State.overriding
           else:
             self.state = State.enabled
-          self.add_current_alert_types(ET.ENABLE)
+          self.add_engage_alert_type()
 
     # check if MADS is engaged and actuators are enabled
     enabled = self.state in ENABLED_STATES

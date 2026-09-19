@@ -25,13 +25,14 @@ MADS_STEERING_MODE_OPTIONS = [
 MADS_MAIN_CRUISE_BASE_DESC = tr("Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.")
 MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC = "{engage}<br><h4>{note}</h4>".format(
   engage=tr("Engage lateral and longitudinal control with cruise control engagement."),
-  note=tr("Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off."),
+  note=tr("Note: Lateral can be toggled off while cruise is engaged, but it disengages with cruise and cannot engage on its own."),
 )
 
 STATUS_CHECK_COMPATIBILITY = tr("Start the vehicle to check vehicle compatibility.")
 DEFAULT_TO_OFF = tr("This feature defaults to OFF, and does not allow selection due to vehicle limitations.")
 DEFAULT_TO_ON = tr("This feature defaults to ON, and does not allow selection due to vehicle limitations.")
 STATUS_DISENGAGE_ONLY = tr("This platform only supports Disengage mode due to vehicle limitations.")
+UEM_REQUIRED = tr("This feature is always ON: lateral control disengages with cruise control, so it has to come back with it.")
 
 
 class MadsSettingsLayout(Widget):
@@ -113,6 +114,7 @@ class MadsSettingsLayout(Widget):
 
   def _update_toggles(self):
     self._update_steering_mode_description(self._steering_mode.action_item.get_selected_button())
+    self._update_unified_engagement_toggle()
     if self._mads_limited_settings():
       ui_state.params.remove("MadsMainCruiseAllowed")
       ui_state.params.put_bool("MadsUnifiedEngagementMode", True)
@@ -122,10 +124,6 @@ class MadsSettingsLayout(Widget):
       self._main_cruise_toggle.action_item.set_state(False)
       self._main_cruise_toggle.set_description("<b>" + DEFAULT_TO_OFF + "</b><br>" + MADS_MAIN_CRUISE_BASE_DESC)
 
-      self._unified_engagement_toggle.action_item.set_enabled(False)
-      self._unified_engagement_toggle.action_item.set_state(True)
-      self._unified_engagement_toggle.set_description("<b>" + DEFAULT_TO_ON + "</b><br>" + MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
-
       self._steering_mode.set_description(STATUS_DISENGAGE_ONLY)
       self._steering_mode.action_item.set_selected_button(MadsSteeringModeOnBrake.DISENGAGE)
       self._steering_mode.action_item.set_enabled_buttons({MadsSteeringModeOnBrake.DISENGAGE})
@@ -133,8 +131,12 @@ class MadsSettingsLayout(Widget):
       self._main_cruise_toggle.action_item.set_enabled(True)
       self._main_cruise_toggle.set_description(MADS_MAIN_CRUISE_BASE_DESC)
 
-      self._unified_engagement_toggle.action_item.set_enabled(True)
-      self._unified_engagement_toggle.set_description(MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
-
       self._steering_mode.action_item.set_enabled(True)
       self._steering_mode.action_item.set_enabled_buttons(None)
+
+  def _update_unified_engagement_toggle(self):
+    if not ui_state.params.get_bool("MadsUnifiedEngagementMode"):
+      ui_state.params.put_bool("MadsUnifiedEngagementMode", True)
+    self._unified_engagement_toggle.action_item.set_enabled(False)
+    self._unified_engagement_toggle.action_item.set_state(True)
+    self._unified_engagement_toggle.set_description("<b>" + UEM_REQUIRED + "</b><br>" + MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
