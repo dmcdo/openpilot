@@ -199,6 +199,36 @@ class TestEngagementChimes(OpenpilotTestCase):
     assert sd.events_sp.has(EventNameSP.lkasDisable)
     assert ET.USER_DISABLE in sd.state_machine.current_alert_types
 
+  def test_engage_chime_on_longitudinal_engage_with_lateral_already_on(self, mocker):
+    mads, sd = self._make(mocker)
+    mads.state_machine.state = State.enabled
+    mads.enabled = True
+    mads.active = True
+    mads.unified_engagement_mode = True
+    # selfdrived engaged this frame and appended its own ET.ENABLE before we ran
+    sd.enabled = True
+    sd.state_machine.current_alert_types.append(ET.ENABLE)
+    sd.events.add(EventName.pcmEnable)
+
+    mads.update(make_car_state())
+    # the event is the only thing carrying the engage alert, so it has to survive for the chime
+    assert sd.events.has(EventName.pcmEnable)
+    assert mads.state_machine.state == State.enabled
+
+  def test_engage_chime_on_longitudinal_engage_with_lateral_paused(self, mocker):
+    mads, sd = self._make(mocker, MadsSteeringModeOnBrake.PAUSE)
+    mads.state_machine.state = State.paused
+    mads.enabled = True
+    mads.unified_engagement_mode = True
+    sd.enabled = True
+    sd.state_machine.current_alert_types.append(ET.ENABLE)
+    sd.events.add(EventName.pcmEnable)
+
+    mads.update(make_car_state(brake_pressed=True, v_ego=10.0))
+    assert sd.events.has(EventName.pcmEnable)
+    # handing the event back is for the chime only, ACC engaging still doesn't resume lateral
+    assert mads.state_machine.state == State.paused
+
   def test_no_duplicate_disable_event_in_disengage_mode(self, mocker):
     mads, sd = self._make(mocker, MadsSteeringModeOnBrake.DISENGAGE)
     mads.state_machine.state = State.enabled

@@ -33,6 +33,7 @@ class ModularAssistiveDrivingSystem:
     self.enabled = False
     self.active = False
     self.available = False
+    self.blocked_enable_events: list[int] = []
     self.lateral_mismatch_counter = 0
     self.allow_always = False
     self.no_main_cruise = False
@@ -145,6 +146,18 @@ class ModularAssistiveDrivingSystem:
     if not self.events_sp.has(EventNameSP.lkasDisable):
       self.events_sp.add(EventNameSP.lkasDisable)
 
+  def restore_enable_events(self):
+    """
+    Put back the enable events blocked for MADS' own state machine, now that it has had its say.
+
+    selfdrived runs its state machine before us and builds its alerts after us, so an event we drop
+    is an alert it loses. pcmEnable and buttonEnable carry nothing but ET.ENABLE, which only reaches
+    an alert when something did engage, so handing them back can't sound a chime nothing earned.
+    """
+    for event in self.blocked_enable_events:
+      self.events.add(event)
+    self.blocked_enable_events = []
+
   def update_events(self, CS: structs.CarState):
     if not self.selfdrive.enabled and self.enabled:
       if CS.standstill:
@@ -189,6 +202,9 @@ class ModularAssistiveDrivingSystem:
         self.events_sp.add(EventNameSP.pedalPressedAlertOnly)
 
       if self.block_unified_engagement_mode():
+        # hide these from MADS' state machine only. They are selfdrived's, and they carry the engage
+        # chime, so they go back on the list before it builds its alerts. See restore_enable_events()
+        self.blocked_enable_events = [e for e in (EventName.pcmEnable, EventName.buttonEnable) if self.events.has(e)]
         self.events.remove(EventName.pcmEnable)
         self.events.remove(EventName.buttonEnable)
     else:
@@ -248,6 +264,8 @@ class ModularAssistiveDrivingSystem:
 
     if not self.CP.passive and self.selfdrive.initialized:
       self.enabled, self.active = self.state_machine.update()
+
+    self.restore_enable_events()
 
     # Copy of previous SelfdriveD states for MADS events handling
     self.selfdrive.enabled_prev = self.selfdrive.enabled
