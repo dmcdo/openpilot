@@ -126,9 +126,6 @@ class TestPauseMode(OpenpilotTestCase):
     mads.state_machine.state = State.paused
     mads.enabled = True
     mads.active = False
-    # lateral only comes back with longitudinal engaged, see TestLateralFollowsLongitudinal
-    sd.enabled = True
-    sd.enabled_prev = True
 
     run_frames(mads, sd, make_car_state(standstill=True))
     assert mads.state_machine.state == State.enabled
@@ -148,9 +145,6 @@ class TestPauseMode(OpenpilotTestCase):
     assert mads.state_machine.state == State.paused
 
     sd.sm['pandaStates'] = [make_panda_state(mocker, True)]
-    # lateral only comes back with longitudinal engaged, see TestLateralFollowsLongitudinal
-    sd.enabled = True
-    sd.enabled_prev = True
     run_frames(mads, sd, make_car_state(standstill=True))
     assert mads.state_machine.state == State.enabled
 

@@ -65,46 +65,67 @@ class TestLateralFollowsLongitudinal(OpenpilotTestCase):
     assert sd.events_sp.has(EventNameSP.lkasDisable)
     assert mads.state_machine.state == State.disabled
 
-  # lateral cannot come up on its own
-
-  def test_lkas_button_blocked_while_longitudinal_off(self, mocker):
+  def test_lkas_button_blocked_on_longitudinal_disengage_frame(self, mocker):
     mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
+    sd.enabled_prev = True
 
     mads.update(lkas_button_press())
     assert not sd.events_sp.has(EventNameSP.lkasEnable)
-    assert sd.events.has(EventName.wrongCarMode)
+    assert sd.events_sp.has(EventNameSP.lkasDisable)
     assert mads.state_machine.state == State.disabled
-    assert not mads.enabled
 
-  def test_main_cruise_does_not_engage_lateral_while_longitudinal_off(self, mocker):
+  # lateral may come up on its own, but only out of a fully disengaged state
+
+  def test_lkas_button_engages_lateral_while_longitudinal_off(self, mocker):
+    mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
+
+    mads.update(lkas_button_press())
+    assert sd.events_sp.has(EventNameSP.lkasEnable)
+    assert not sd.events.has(EventName.wrongCarMode)
+    assert mads.state_machine.state == State.enabled
+    assert mads.enabled
+    assert mads.active
+    assert not sd.enabled
+
+  def test_main_cruise_engages_lateral_while_longitudinal_off(self, mocker):
     mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
     mads.main_enabled_toggle = True
     sd.CS_prev = make_car_state()
     sd.CS_prev.cruiseState.available = False
 
     mads.update(make_car_state())
-    assert not sd.events_sp.has(EventNameSP.lkasEnable)
-    # ACC MAIN coming up isn't a request for lateral, so it shouldn't nag
-    assert not sd.events.has(EventName.wrongCarMode)
-    assert mads.state_machine.state == State.disabled
+    assert sd.events_sp.has(EventNameSP.lkasEnable)
+    assert mads.state_machine.state == State.enabled
 
-  def test_paused_lateral_does_not_resume_while_longitudinal_off(self, mocker):
+  def test_paused_lateral_resumes_while_longitudinal_off(self, mocker):
     mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.PAUSE)
     mads.state_machine.state = State.paused
     mads.enabled = True
 
     mads.update(make_car_state(standstill=True))
-    assert not sd.events_sp.has(EventNameSP.silentLkasEnable)
-    assert mads.state_machine.state == State.paused
+    assert sd.events_sp.has(EventNameSP.silentLkasEnable)
+    assert mads.state_machine.state == State.enabled
 
   def test_unified_engagement_blocked_when_longitudinal_refused(self, mocker):
     mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
     mads.unified_engagement_mode = True
-    # ACC MAIN enable event present, but selfdrived refused to engage
-    sd.events.add(EventName.pcmEnable)
+    # enable event present, but selfdrived refused to engage. MADS strips the longitudinal-only
+    # no-entry events, so UEM has to check that longitudinal actually came up
+    sd.events.add(EventName.buttonEnable)
+    sd.events.add(EventName.pedalPressed)
 
-    mads.update(make_car_state())
+    mads.update(make_car_state(brake_pressed=True, v_ego=10.0))
     assert mads.state_machine.state == State.disabled
+    assert not mads.enabled
+
+  def test_lkas_button_still_engages_lateral_when_longitudinal_refused(self, mocker):
+    mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
+    mads.unified_engagement_mode = True
+    sd.events.add(EventName.buttonEnable)
+
+    mads.update(lkas_button_press())
+    assert mads.state_machine.state == State.enabled
+    assert not sd.enabled
 
   # lateral may still be toggled independently while longitudinal is engaged
 

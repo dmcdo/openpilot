@@ -10,7 +10,6 @@ from openpilot.cereal import log, custom
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
 from openpilot.common.params import Params
-from openpilot.selfdrive.selfdrived.events import ET
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param, MADS_NO_ACC_MAIN_BUTTON
 from openpilot.sunnypilot.mads.state import StateMachine, GEARS_ALLOW_PAUSED_SILENT
 
@@ -89,6 +88,12 @@ class ModularAssistiveDrivingSystem:
     if self.selfdrive.enabled and self.selfdrive.enabled_prev:
       return True
 
+    # UEM joins lateral to longitudinal on the frame longitudinal engages. If longitudinal refused,
+    # there is nothing to join: MADS strips the longitudinal-only no-entry events below, so lateral
+    # would otherwise engage alone off an enable event that ACC itself rejected.
+    if not self.selfdrive.enabled:
+      return True
+
     return False
 
   def get_wrong_car_mode(self, alert_only: bool) -> None:
@@ -117,37 +122,28 @@ class ModularAssistiveDrivingSystem:
              if ps.safetyModel not in IGNORED_SAFETY_MODES):
       self.lateral_mismatch_counter += 1
 
-  def update_lateral_follows_longitudinal(self, CS: structs.CarState):
+  def update_lateral_follows_longitudinal(self):
     """
     Tie lateral control to longitudinal control, in one direction only.
 
-    Lateral may be toggled off with the LKAS button while ACC stays engaged, but it can never
-    run on its own: it cannot engage while ACC is off, and it disengages when ACC disengages.
-    The net effect is traditional cruise, with the option to suspend steering while cruising.
+    Lateral never outlives longitudinal: whatever drops ACC drops steering with it, rather than
+    pausing it. Lateral may still be toggled off with the LKAS button while ACC keeps running, and
+    it may be brought up on its own, but only out of a fully disengaged openpilot. The net effect
+    is traditional cruise plus standalone lane keeping, with no way to be left steering after a
+    disengagement.
     """
-    if self.CP.passive or self.selfdrive.enabled:
+    if self.CP.passive or self.selfdrive.enabled or not self.selfdrive.enabled_prev:
       return
 
-    if self.selfdrive.enabled_prev:
-      # ACC dropped out this frame, take lateral down with it instead of pausing it. MADS also owns the
-      # disengage chime here, as the events that disengaged ACC are stripped at the end of update_events
-      self.events_sp.remove(EventNameSP.silentLkasDisable)
-      if not self.events_sp.has(EventNameSP.lkasDisable):
-        self.events_sp.add(EventNameSP.lkasDisable)
-      return
-
-    # ACC is off, block every path that would bring lateral up on its own
-    self.events.remove(EventName.pcmEnable)
-    self.events.remove(EventName.buttonEnable)
+    # ACC dropped out this frame. Take lateral down with it and let nothing bring it back up on the
+    # same frame; re-engaging is a deliberate act from the disabled state. The UEM enable events are
+    # already blocked by block_unified_engagement_mode. MADS also owns the disengage chime here, as
+    # the events that disengaged ACC are stripped at the end of update_events
+    self.events_sp.remove(EventNameSP.lkasEnable)
     self.events_sp.remove(EventNameSP.silentLkasEnable)
-
-    if self.events_sp.has(EventNameSP.lkasEnable):
-      self.events_sp.remove(EventNameSP.lkasEnable)
-      # only tell the user why when they asked for it, ACC MAIN coming up shouldn't nag
-      if any(be.type == ButtonType.lkas and be.pressed for be in CS.buttonEvents):
-        if not self.events.has(EventName.wrongCarMode):
-          self.events.add(EventName.wrongCarMode)
-        self.state_machine.add_current_alert_types(ET.NO_ENTRY)
+    self.events_sp.remove(EventNameSP.silentLkasDisable)
+    if not self.events_sp.has(EventNameSP.lkasDisable):
+      self.events_sp.add(EventNameSP.lkasDisable)
 
   def update_events(self, CS: structs.CarState):
     if not self.selfdrive.enabled and self.enabled:
@@ -240,7 +236,7 @@ class ModularAssistiveDrivingSystem:
     self.events.remove(EventName.pedalPressed)
     self.events.remove(EventName.wrongCruiseMode)
 
-    self.update_lateral_follows_longitudinal(CS)
+    self.update_lateral_follows_longitudinal()
 
   def update(self, CS: structs.CarState):
     if not self.enabled_toggle:

@@ -25,7 +25,7 @@ MADS_STEERING_MODE_OPTIONS = [
 MADS_MAIN_CRUISE_BASE_DESC = tr("Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.")
 MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC = "{engage}<br><h4>{note}</h4>".format(
   engage=tr("Engage lateral and longitudinal control with cruise control engagement."),
-  note=tr("Note: Lateral can be toggled off while cruise is engaged, but it disengages with cruise and cannot engage on its own."),
+  note=tr("Note: Lateral can be toggled off while cruise is engaged, and always disengages with it. It can only engage on its own from a disengaged state."),
 )
 
 STATUS_CHECK_COMPATIBILITY = tr("Start the vehicle to check vehicle compatibility.")
